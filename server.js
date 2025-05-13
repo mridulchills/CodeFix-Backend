@@ -1,4 +1,4 @@
-
+// server.js
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -11,134 +11,147 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// Get API key from environment variable
+// Env vars
 const API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent";
+const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta2/models/gemini-pro:generate";
 
-// Route for generating code
+//
+// POST /api/generate
+//   → Generate *and execute* Python code via Gemini
+//
 app.post('/api/generate', async (req, res) => {
   try {
     const { prompt } = req.body;
-    
-    if (!prompt) {
-      return res.status(400).json({ error: "Prompt is required" });
-    }
-    
-    // Prepare the request to Gemini API
+    if (!prompt) return res.status(400).json({ error: "Prompt is required" });
+
     const payload = {
       contents: [
         {
           parts: [
-            {
-              text: `Generate Python code for the following request: ${prompt}. Provide only the code, with no explanations before or after.`
-            }
+            { text: `Generate and run Python code for this request: ${prompt}. Provide only the final code and its output; no extra explanations.` }
           ]
         }
       ],
-      generationConfig: {
+      config: {
         temperature: 0.2,
         topK: 40,
         topP: 0.95,
         maxOutputTokens: 8192,
+        tools: [{ codeExecution: {} }]
       }
     };
-    
-    // Make the request to Gemini API
+
+    // Call Gemini
     const response = await axios.post(
-      `${GEMINI_API_URL}?key=${API_KEY}`,
+      GEMINI_API_URL,
       payload,
-      { headers: { "Content-Type": "application/json" } }
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${API_KEY}`
+        }
+      }
     );
-    
-    // Extract code from Gemini response
-    if (response.data.candidates && response.data.candidates[0]?.content?.parts) {
-      let generatedText = response.data.candidates[0].content.parts[0].text;
-      
-      // Try to extract just the code if it has markdown code blocks
-      const codeBlockMatch = generatedText.match(/```(?:python)?([\s\S]*?)```/);
-      const code = codeBlockMatch && codeBlockMatch[1] 
-        ? codeBlockMatch[1].trim() 
-        : generatedText.trim();
-      
-      return res.json({ code });
-    } else {
-      return res.status(500).json({ error: "Unexpected API response format" });
+
+    // Parse out code + execution results
+    const parts = response.data?.candidates?.[0]?.content?.parts || [];
+    let code = "", output = "";
+    for (const p of parts) {
+      if (p.executableCode?.code)     code   += p.executableCode.code   + "\n";
+      if (p.codeExecutionResult?.output) output += p.codeExecutionResult.output + "\n";
     }
-  } catch (error) {
-    console.error('Error generating code:', error);
-    return res.status(500).json({ 
-      error: `Server error: ${error.message}`,
-      details: error.response ? error.response.data : null
+    if (!code && parts[0]?.text) {
+      // fallback to plain text if exec parts missing
+      code = parts[0].text;
+    }
+
+    return res.json({
+      code: code.trim(),
+      output: output.trim()
+    });
+
+  } catch (err) {
+    console.error('Error generating via Gemini:', err.response?.data || err.message);
+    return res.status(500).json({
+      error:   `Server error: ${err.message}`,
+      details: err.response?.data
     });
   }
 });
 
-// Route for fixing code
+//
+// POST /api/fix
+//   → Fix and re-run existing Python code
+//
 app.post('/api/fix', async (req, res) => {
   try {
-    const { code, error: errorMessage } = req.body;
-    
-    if (!code) {
-      return res.status(400).json({ error: "Code is required" });
-    }
-    
-    // Prepare the request to Gemini API
+    const { code: userCode, error: errorMessage } = req.body;
+    if (!userCode) return res.status(400).json({ error: "Code is required" });
+
     const payload = {
       contents: [
         {
           parts: [
-            {
-              text: `Fix the following Python code:\n\n${code}\n\n` +
-                    `${errorMessage ? `Error message: ${errorMessage}` : 'Identify and fix any issues in this code.'}` +
-                    `\n\nProvide only the corrected code with no explanations before or after.`
+            { text:
+                `Fix and run this Python code:\n\n${userCode}\n\n` +
+                (errorMessage
+                  ? `Error message: ${errorMessage}\n\n`
+                  : `Identify and fix any issues in this code.\n\n`
+                ) +
+                `Provide only the corrected code and its output; no other text.`
             }
           ]
         }
       ],
-      generationConfig: {
+      config: {
         temperature: 0.1,
         topK: 40,
         topP: 0.95,
         maxOutputTokens: 8192,
+        tools: [{ codeExecution: {} }]
       }
     };
-    
-    // Make the request to Gemini API
+
     const response = await axios.post(
-      `${GEMINI_API_URL}?key=${API_KEY}`,
+      GEMINI_API_URL,
       payload,
-      { headers: { "Content-Type": "application/json" } }
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${API_KEY}`
+        }
+      }
     );
-    
-    // Extract code from Gemini response
-    if (response.data.candidates && response.data.candidates[0]?.content?.parts) {
-      let fixedText = response.data.candidates[0].content.parts[0].text;
-      
-      // Try to extract just the code if it has markdown code blocks
-      const codeBlockMatch = fixedText.match(/```(?:python)?([\s\S]*?)```/);
-      const fixedCode = codeBlockMatch && codeBlockMatch[1] 
-        ? codeBlockMatch[1].trim() 
-        : fixedText.trim();
-      
-      return res.json({ code: fixedCode });
-    } else {
-      return res.status(500).json({ error: "Unexpected API response format" });
+
+    const parts = response.data?.candidates?.[0]?.content?.parts || [];
+    let fixedCode = "", output = "";
+    for (const p of parts) {
+      if (p.executableCode?.code)     fixedCode += p.executableCode.code + "\n";
+      if (p.codeExecutionResult?.output) output    += p.codeExecutionResult.output + "\n";
     }
-  } catch (error) {
-    console.error('Error fixing code:', error);
-    return res.status(500).json({ 
-      error: `Server error: ${error.message}`,
-      details: error.response ? error.response.data : null
+    if (!fixedCode && parts[0]?.text) {
+      fixedCode = parts[0].text;
+    }
+
+    return res.json({
+      code:   fixedCode.trim(),
+      output: output.trim()
+    });
+
+  } catch (err) {
+    console.error('Error fixing via Gemini:', err.response?.data || err.message);
+    return res.status(500).json({
+      error:   `Server error: ${err.message}`,
+      details: err.response?.data
     });
   }
 });
 
-// Health check endpoint
+// Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'Backend service is running' });
 });
 
-// Start the server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
