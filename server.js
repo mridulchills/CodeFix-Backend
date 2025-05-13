@@ -13,24 +13,23 @@ app.use(express.json());
 
 // Env vars
 const API_KEY = process.env.GEMINI_API_KEY;
+// Correct Gemini REST endpoint for code execution
 const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta2/models/gemini-pro:generate";
 
 //
 // POST /api/generate
-//   → Generate *and execute* Python code via Gemini
+//   → Generate and execute Python code via Gemini
 //
 app.post('/api/generate', async (req, res) => {
   try {
     const { prompt } = req.body;
-    if (!prompt) return res.status(400).json({ error: "Prompt is required" });
+    if (!prompt) {
+      return res.status(400).json({ error: "Prompt is required" });
+    }
 
     const payload = {
       contents: [
-        {
-          parts: [
-            { text: `Generate and run Python code for this request: ${prompt}. Provide only the final code and its output; no extra explanations.` }
-          ]
-        }
+        { parts: [{ text: `Generate and run Python code for this request: ${prompt}. Provide only the final code and its output; no extra explanations.` }] }
       ],
       config: {
         temperature: 0.2,
@@ -41,7 +40,6 @@ app.post('/api/generate', async (req, res) => {
       }
     };
 
-    // Call Gemini
     const response = await axios.post(
       GEMINI_API_URL,
       payload,
@@ -53,15 +51,13 @@ app.post('/api/generate', async (req, res) => {
       }
     );
 
-    // Parse out code + execution results
     const parts = response.data?.candidates?.[0]?.content?.parts || [];
     let code = "", output = "";
     for (const p of parts) {
-      if (p.executableCode?.code)     code   += p.executableCode.code   + "\n";
+      if (p.executableCode?.code)      code   += p.executableCode.code   + "\n";
       if (p.codeExecutionResult?.output) output += p.codeExecutionResult.output + "\n";
     }
     if (!code && parts[0]?.text) {
-      // fallback to plain text if exec parts missing
       code = parts[0].text;
     }
 
@@ -86,22 +82,20 @@ app.post('/api/generate', async (req, res) => {
 app.post('/api/fix', async (req, res) => {
   try {
     const { code: userCode, error: errorMessage } = req.body;
-    if (!userCode) return res.status(400).json({ error: "Code is required" });
+    if (!userCode) {
+      return res.status(400).json({ error: "Code is required" });
+    }
 
     const payload = {
       contents: [
-        {
-          parts: [
-            { text:
-                `Fix and run this Python code:\n\n${userCode}\n\n` +
-                (errorMessage
-                  ? `Error message: ${errorMessage}\n\n`
-                  : `Identify and fix any issues in this code.\n\n`
-                ) +
-                `Provide only the corrected code and its output; no other text.`
-            }
-          ]
-        }
+        { parts: [{ text:
+            `Fix and run this Python code:\n\n${userCode}\n\n` +
+            (errorMessage
+              ? `Error message: ${errorMessage}\n\n`
+              : `Identify and fix any issues in this code.\n\n`
+            ) +
+            `Provide only the corrected code and its output; no other text.`
+        }] }
       ],
       config: {
         temperature: 0.1,
@@ -126,7 +120,7 @@ app.post('/api/fix', async (req, res) => {
     const parts = response.data?.candidates?.[0]?.content?.parts || [];
     let fixedCode = "", output = "";
     for (const p of parts) {
-      if (p.executableCode?.code)     fixedCode += p.executableCode.code + "\n";
+      if (p.executableCode?.code)      fixedCode += p.executableCode.code + "\n";
       if (p.codeExecutionResult?.output) output    += p.codeExecutionResult.output + "\n";
     }
     if (!fixedCode && parts[0]?.text) {
