@@ -11,61 +11,68 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// Env
+// Env validation
 const API_KEY = process.env.GEMINI_API_KEY;
 if (!API_KEY) {
-  console.error("❌ GEMINI_API_KEY not set!");
+  console.error('❌ GEMINI_API_KEY is not set in your environment.');
   process.exit(1);
 }
 
-const MODEL = 'gemini-2.0-flash';
-const BASE = 'https://generativelanguage.googleapis.com/v1beta';
-const makeUrl = (action) =>
-  `${BASE}/models/${MODEL}:${action}?key=${API_KEY}`;
+// Gemini Code-Execution endpoint
+const MODEL   = 'gemini-2.0-flash';
+const BASE    = 'https://generativelanguage.googleapis.com/v1beta2';
+const KEY_QS  = `?key=${API_KEY}`;
+const CODE_EP = `${BASE}/models/${MODEL}:generateCode${KEY_QS}`;
 
-async function callGemini(action, contents, opts) {
-  const url = makeUrl(action);
-  const payload = {
-    tools: [{ code_execution: {} }],
-    contents,
-    // flatten your config options here:
-    temperature: opts.temperature,
-    topK:       opts.topK,
-    topP:       opts.topP,
-    maxOutputTokens: opts.maxOutputTokens
+// Root / health routes
+app.get('/', (_req, res) => {
+  res.send('👋 Python-Code-Helper backend is alive');
+});
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', message: 'Backend service is running' });
+});
+
+// Helper to call Gemini generateCode
+async function callGenerateCode(promptText, { temperature, topK, topP, maxOutputTokens }) {
+  const body = {
+    prompt: { text: promptText },
+    temperature,
+    topK,
+    topP,
+    maxOutputTokens,
+    codeExecutionConfig: {}
   };
 
-  const resp = await axios.post(url, payload, {
+  const resp = await axios.post(CODE_EP, body, {
     headers: { 'Content-Type': 'application/json' }
   });
-  return resp.data?.candidates?.[0]?.content?.parts || [];
+  return resp.data;
 }
 
+// POST /api/generate → generate new Python code + run it
 app.post('/api/generate', async (req, res) => {
+  const { prompt } = req.body;
+  if (!prompt) {
+    return res.status(400).json({ error: 'Prompt is required' });
+  }
+
+  const promptText = 
+    `Generate and run Python code for this request: ${prompt}. ` +
+    `Provide only the final code and its output; no extra explanations.`;
+
   try {
-    const { prompt } = req.body;
-    if (!prompt) return res.status(400).json({ error: 'Prompt is required' });
-
-    const contents = [{
-      parts: [{ text:
-        `Generate and run Python code for this request: ${prompt}. ` +
-        `Provide only the final code and its output; no extra explanations.`
-      }]
-    }];
-
-    const parts = await callGemini('generateContent', contents, {
-      temperature: 0.2,
-      topK: 40,
-      topP: 0.95,
+    const data = await callGenerateCode(promptText, {
+      temperature:     0.2,
+      topK:            40,
+      topP:            0.95,
       maxOutputTokens: 8192
     });
 
-    let code = '', output = '';
-    for (const p of parts) {
-      if (p.executableCode?.code)          code   += p.executableCode.code   + '\n';
-      if (p.codeExecutionResult?.output)   output += p.codeExecutionResult.output + '\n';
-      if (p.text && !code)                 code    = p.text;
-    }
+    // Parse first run/candidate
+    const run = (data.runs || data.candidates || [])[0] || {};
+
+    const code   = run.executableCode?.code ?? run.text ?? '';
+    const output = run.codeExecutionOutput?.stdout ?? '';
 
     res.json({ code: code.trim(), output: output.trim() });
   } catch (err) {
@@ -77,34 +84,33 @@ app.post('/api/generate', async (req, res) => {
   }
 });
 
+// POST /api/fix → fix & re-run existing Python code
 app.post('/api/fix', async (req, res) => {
+  const { code: userCode, error: errorMessage } = req.body;
+  if (!userCode) {
+    return res.status(400).json({ error: 'Code is required' });
+  }
+
+  const promptText =
+    `Fix and run this Python code:\n\n${userCode}\n\n` +
+    (errorMessage
+      ? `Error message: ${errorMessage}\n\n`
+      : `Identify and fix any issues in this code.\n\n`
+    ) +
+    `Provide only the corrected code and its output; no other text.`;
+
   try {
-    const { code: userCode, error: errorMessage } = req.body;
-    if (!userCode) return res.status(400).json({ error: 'Code is required' });
-
-    const promptText = 
-      `Fix and run this Python code:\n\n${userCode}\n\n` +
-      (errorMessage
-        ? `Error message: ${errorMessage}\n\n`
-        : `Identify and fix any issues in this code.\n\n`
-      ) +
-      `Provide only the corrected code and its output; no other text.`;
-
-    const contents = [{ parts: [{ text: promptText }] }];
-
-    const parts = await callGemini('generateContent', contents, {
-      temperature: 0.1,
-      topK: 40,
-      topP: 0.95,
+    const data = await callGenerateCode(promptText, {
+      temperature:     0.1,
+      topK:            40,
+      topP:            0.95,
       maxOutputTokens: 8192
     });
 
-    let fixedCode = '', output = '';
-    for (const p of parts) {
-      if (p.executableCode?.code)        fixedCode += p.executableCode.code + '\n';
-      if (p.codeExecutionResult?.output) output    += p.codeExecutionResult.output + '\n';
-      if (p.text && !fixedCode)         fixedCode  = p.text;
-    }
+    const run = (data.runs || data.candidates || [])[0] || {};
+
+    const fixedCode = run.executableCode?.code ?? run.text ?? '';
+    const output    = run.codeExecutionOutput?.stdout ?? '';
 
     res.json({ code: fixedCode.trim(), output: output.trim() });
   } catch (err) {
@@ -114,10 +120,6 @@ app.post('/api/fix', async (req, res) => {
       details: err.response?.data
     });
   }
-});
-
-app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', message: 'Backend service is running' });
 });
 
 app.listen(PORT, () => {
