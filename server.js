@@ -18,32 +18,33 @@ if (!API_KEY) {
   process.exit(1);
 }
 
-// Gemini Code-Execution endpoint
-const MODEL   = 'gemini-2.0-flash';
-const BASE    = 'https://generativelanguage.googleapis.com/v1beta2';
-const KEY_QS  = `?key=${API_KEY}`;
-const CODE_EP = `${BASE}/models/${MODEL}:generateCode${KEY_QS}`;
+// Updated Gemini configuration
+const MODEL = 'gemini-1.5-flash-latest';
+const BASE = 'https://generativelanguage.googleapis.com/v1beta';
+const KEY_QS = `?key=${API_KEY}`;
+const GEN_EP = `${BASE}/models/${MODEL}:generateContent${KEY_QS}`;
 
 // Root / health routes
 app.get('/', (_req, res) => {
   res.send('👋 Python-Code-Helper backend is alive');
 });
+
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', message: 'Backend service is running' });
 });
 
-// Helper to call Gemini generateCode
-async function callGenerateCode(promptText, { temperature, topK, topP, maxOutputTokens }) {
+// Updated helper to call Gemini
+async function callGenerateCode(promptText, generationConfig) {
   const body = {
-    prompt: { text: promptText },
-    temperature,
-    topK,
-    topP,
-    maxOutputTokens,
-    codeExecutionConfig: {}
+    contents: [{
+      parts: [{
+        text: promptText
+      }]
+    }],
+    generationConfig
   };
 
-  const resp = await axios.post(CODE_EP, body, {
+  const resp = await axios.post(GEN_EP, body, {
     headers: { 'Content-Type': 'application/json' }
   });
   return resp.data;
@@ -58,27 +59,29 @@ app.post('/api/generate', async (req, res) => {
 
   const promptText = 
     `Generate and run Python code for this request: ${prompt}. ` +
-    `Provide only the final code and its output; no extra explanations.`;
+    `Provide only the final code and its output in this exact format:\n` +
+    `Code:\n{your_code_here}\n\nOutput:\n{output_here}`;
 
   try {
     const data = await callGenerateCode(promptText, {
-      temperature:     0.2,
-      topK:            40,
-      topP:            0.95,
+      temperature: 0.2,
+      topK: 40,
+      topP: 0.95,
       maxOutputTokens: 8192
     });
 
-    // Parse first run/candidate
-    const run = (data.runs || data.candidates || [])[0] || {};
+    // Parse response
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const [code, output] = text.split('\n\nOutput:\n');
 
-    const code   = run.executableCode?.code ?? run.text ?? '';
-    const output = run.codeExecutionOutput?.stdout ?? '';
-
-    res.json({ code: code.trim(), output: output.trim() });
+    res.json({ 
+      code: (code || '').replace('Code:\n', '').trim(),
+      output: (output || '').trim()
+    });
   } catch (err) {
     console.error('Error generating via Gemini:', err.response?.data || err.message);
     res.status(500).json({
-      error:   `Server error: ${err.message}`,
+      error: `Server error: ${err.message}`,
       details: err.response?.data
     });
   }
@@ -97,26 +100,29 @@ app.post('/api/fix', async (req, res) => {
       ? `Error message: ${errorMessage}\n\n`
       : `Identify and fix any issues in this code.\n\n`
     ) +
-    `Provide only the corrected code and its output; no other text.`;
+    `Provide only the corrected code and its output in this exact format:\n` +
+    `Code:\n{your_code_here}\n\nOutput:\n{output_here}`;
 
   try {
     const data = await callGenerateCode(promptText, {
-      temperature:     0.1,
-      topK:            40,
-      topP:            0.95,
+      temperature: 0.1,
+      topK: 40,
+      topP: 0.95,
       maxOutputTokens: 8192
     });
 
-    const run = (data.runs || data.candidates || [])[0] || {};
+    // Parse response
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const [fixedCode, output] = text.split('\n\nOutput:\n');
 
-    const fixedCode = run.executableCode?.code ?? run.text ?? '';
-    const output    = run.codeExecutionOutput?.stdout ?? '';
-
-    res.json({ code: fixedCode.trim(), output: output.trim() });
+    res.json({ 
+      code: (fixedCode || '').replace('Code:\n', '').trim(),
+      output: (output || '').trim()
+    });
   } catch (err) {
     console.error('Error fixing via Gemini:', err.response?.data || err.message);
     res.status(500).json({
-      error:   `Server error: ${err.message}`,
+      error: `Server error: ${err.message}`,
       details: err.response?.data
     });
   }
