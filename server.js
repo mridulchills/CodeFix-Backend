@@ -11,56 +11,47 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// Env vars
+// Env
 const API_KEY = process.env.GEMINI_API_KEY;
 if (!API_KEY) {
-  console.error('❌ GEMINI_API_KEY is not set in your environment.');
+  console.error("❌ GEMINI_API_KEY not set!");
   process.exit(1);
 }
 
-// Base Gemini endpoint & model
 const MODEL = 'gemini-2.0-flash';
-const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
+const BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const makeUrl = (action) =>
-  `${BASE_URL}/models/${MODEL}:${action}?key=${API_KEY}`;
+  `${BASE}/models/${MODEL}:${action}?key=${API_KEY}`;
 
-// Helper: post to Gemini
-async function callGemini(action, contents, toolsConfig) {
+async function callGemini(action, contents, opts) {
   const url = makeUrl(action);
   const payload = {
+    tools: [{ code_execution: {} }],
     contents,
-    config: {
-      ...toolsConfig,
-      tools: [{ codeExecution: {} }],
-    },
+    // flatten your config options here:
+    temperature: opts.temperature,
+    topK:       opts.topK,
+    topP:       opts.topP,
+    maxOutputTokens: opts.maxOutputTokens
   };
 
   const resp = await axios.post(url, payload, {
     headers: { 'Content-Type': 'application/json' }
   });
-
   return resp.data?.candidates?.[0]?.content?.parts || [];
 }
 
-// POST /api/generate
 app.post('/api/generate', async (req, res) => {
   try {
     const { prompt } = req.body;
-    if (!prompt) {
-      return res.status(400).json({ error: 'Prompt is required' });
-    }
+    if (!prompt) return res.status(400).json({ error: 'Prompt is required' });
 
-    // Build the `contents` array for Gemini
-    const contents = [
-      {
-        parts: [
-          {
-            text: `Generate and run Python code for this request: ${prompt}. ` +
-                  `Provide only the final code and its output; no extra explanations.`
-          }
-        ]
-      }
-    ];
+    const contents = [{
+      parts: [{ text:
+        `Generate and run Python code for this request: ${prompt}. ` +
+        `Provide only the final code and its output; no extra explanations.`
+      }]
+    }];
 
     const parts = await callGemini('generateContent', contents, {
       temperature: 0.2,
@@ -69,12 +60,11 @@ app.post('/api/generate', async (req, res) => {
       maxOutputTokens: 8192
     });
 
-    // Parse out code + output
     let code = '', output = '';
     for (const p of parts) {
-      if (p.executableCode?.code)       code   += p.executableCode.code   + '\n';
-      if (p.codeExecutionResult?.output) output += p.codeExecutionResult.output + '\n';
-      if (p.text && !code)              code    = p.text;
+      if (p.executableCode?.code)          code   += p.executableCode.code   + '\n';
+      if (p.codeExecutionResult?.output)   output += p.codeExecutionResult.output + '\n';
+      if (p.text && !code)                 code    = p.text;
     }
 
     res.json({ code: code.trim(), output: output.trim() });
@@ -87,27 +77,20 @@ app.post('/api/generate', async (req, res) => {
   }
 });
 
-// POST /api/fix
 app.post('/api/fix', async (req, res) => {
   try {
     const { code: userCode, error: errorMessage } = req.body;
-    if (!userCode) {
-      return res.status(400).json({ error: 'Code is required' });
-    }
+    if (!userCode) return res.status(400).json({ error: 'Code is required' });
 
-    const promptText = [
-      `Fix and run this Python code:\n\n${userCode}\n\n`,
-      errorMessage
+    const promptText = 
+      `Fix and run this Python code:\n\n${userCode}\n\n` +
+      (errorMessage
         ? `Error message: ${errorMessage}\n\n`
-        : `Identify and fix any issues in this code.\n\n`,
-      `Provide only the corrected code and its output; no other text.`
-    ].join('');
+        : `Identify and fix any issues in this code.\n\n`
+      ) +
+      `Provide only the corrected code and its output; no other text.`;
 
-    const contents = [
-      {
-        parts: [{ text: promptText }]
-      }
-    ];
+    const contents = [{ parts: [{ text: promptText }] }];
 
     const parts = await callGemini('generateContent', contents, {
       temperature: 0.1,
@@ -116,10 +99,9 @@ app.post('/api/fix', async (req, res) => {
       maxOutputTokens: 8192
     });
 
-    // Parse out fixedCode + output
     let fixedCode = '', output = '';
     for (const p of parts) {
-      if (p.executableCode?.code)       fixedCode += p.executableCode.code + '\n';
+      if (p.executableCode?.code)        fixedCode += p.executableCode.code + '\n';
       if (p.codeExecutionResult?.output) output    += p.codeExecutionResult.output + '\n';
       if (p.text && !fixedCode)         fixedCode  = p.text;
     }
@@ -134,8 +116,7 @@ app.post('/api/fix', async (req, res) => {
   }
 });
 
-// Health check
-app.get('/api/health', (req, res) => {
+app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', message: 'Backend service is running' });
 });
 
