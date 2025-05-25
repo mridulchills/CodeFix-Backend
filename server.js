@@ -58,7 +58,7 @@ app.post('/api/generate', async (req, res) => {
   }
 
   const promptText = 
-    `Generate and run Python code for this request: ${prompt}. ` +
+    `Generate and run code for this request: ${prompt}. ` +
     `Provide only the final code and its output in this exact format:\n` +
     `Code:\n{your_code_here}\n\nOutput:\n{output_here}`;
 
